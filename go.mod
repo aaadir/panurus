@@ -32,7 +32,6 @@ require (
 	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597
 	golang.org/x/sync v0.22.0
 	google.golang.org/protobuf v1.36.11
-	gopkg.in/yaml.v2 v2.4.0
 	modernc.org/sqlite v1.51.0
 )
 

@@ -1101,9 +1101,27 @@ func TestService_AcquireLocksWithRetry_ExponentialBackoff(t *testing.T) {
 
 		return nil
 	})
-	svc := newTestServiceWithMockLocker(t, mockLocker)
 
-	_, _, err := svc.Audit(context.Background(), &auditmock.Transaction{
+	// Use zero jitter so backoff is deterministic and the ordering check is reliable.
+	noJitterConfig := &auditor.LockConfig{
+		MaxRetries:        10,
+		InitialBackoff:    10 * time.Millisecond,
+		MaxBackoff:        5 * time.Second,
+		BackoffMultiplier: 2.0,
+		JitterFactor:      0,
+	}
+	fakeStore := newFakeStore()
+	storeService, err := auditdb.NewStoreService(fakeStore, auditdb.WithLocker(mockLocker))
+	require.NoError(t, err)
+	svc := auditor.NewService(
+		token.TMSID{},
+		nil,
+		storeService,
+		nil, nil, nil, nil, nil,
+		noJitterConfig,
+	)
+
+	_, _, err = svc.Audit(context.Background(), &auditmock.Transaction{
 		IDStub: func() string { return "tx-lock-backoff" },
 		RequestStub: func() *token.Request {
 			return token.NewRequest(newTestManagementService(t), token.RequestAnchor("tx-lock-backoff"))
@@ -1113,12 +1131,11 @@ func TestService_AcquireLocksWithRetry_ExponentialBackoff(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, callTimes, 4, "Should have 4 attempts")
 
-	// Verify backoff is increasing (with some tolerance for jitter)
+	// Verify backoff is increasing. With zero jitter, delay2 should be exactly 2x delay1.
+	// We use a loose check (1.3x) to tolerate OS scheduling noise.
 	if len(callTimes) >= 3 {
 		delay1 := callTimes[1].Sub(callTimes[0])
 		delay2 := callTimes[2].Sub(callTimes[1])
-		// Second delay should be roughly 2x first delay (accounting for jitter)
-		// We use a loose check: delay2 should be at least 1.3x delay1
 		assert.Greater(t, delay2, delay1*13/10, "Backoff should increase exponentially")
 	}
 }

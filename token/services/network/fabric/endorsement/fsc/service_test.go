@@ -12,6 +12,7 @@ import (
 
 	"github.com/LFDT-Panurus/panurus/token"
 	mock2 "github.com/LFDT-Panurus/panurus/token/driver/mock"
+	replaymock "github.com/LFDT-Panurus/panurus/token/services/network/common/replay/mock"
 	"github.com/LFDT-Panurus/panurus/token/services/network/driver"
 	"github.com/LFDT-Panurus/panurus/token/services/network/fabric/endorsement/fsc"
 	"github.com/LFDT-Panurus/panurus/token/services/network/fabric/endorsement/fsc/mock"
@@ -69,6 +70,7 @@ func TestNewEndorsementService(t *testing.T) {
 			channelProvider,
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.NoError(t, err)
@@ -120,6 +122,7 @@ func TestNewEndorsementService(t *testing.T) {
 			channelProvider,
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.NoError(t, err)
@@ -162,6 +165,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.NoError(t, err)
@@ -198,6 +202,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)
@@ -234,6 +239,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)
@@ -271,6 +277,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)
@@ -297,6 +304,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)
@@ -329,6 +337,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)
@@ -365,6 +374,7 @@ func TestNewEndorsementService(t *testing.T) {
 			&mock.ChannelProvider{},
 			&mock.EndorserSelector{},
 			&mock.PublicParamsValidator{},
+			&replaymock.Guard{},
 		)
 
 		require.Error(t, err)

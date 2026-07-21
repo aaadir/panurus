@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package fsc
 
 import (
+	"github.com/LFDT-Panurus/panurus/token/services/network/common/replay"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
 )
 
@@ -21,4 +22,9 @@ var (
 	ErrValidateProposal = errors.New("failed to validate proposal")
 	// ErrEndorseProposal signals a failure in endorsing the proposal
 	ErrEndorseProposal = errors.New("failed to endorse proposal")
+	// ErrAlreadyProcessed signals that an equivalent request has already been processed
+	ErrAlreadyProcessed = replay.ErrAlreadyProcessed
+	// ErrOutOfWindow signals that a request's claimed timestamp falls outside the replay
+	// guard's freshness window
+	ErrOutOfWindow = replay.ErrOutOfWindow
 )

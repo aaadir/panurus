@@ -8,9 +8,12 @@ package fsc_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/LFDT-Panurus/panurus/token"
 	mock2 "github.com/LFDT-Panurus/panurus/token/driver/mock"
+	"github.com/LFDT-Panurus/panurus/token/services/network/common/replay"
+	replaymock "github.com/LFDT-Panurus/panurus/token/services/network/common/replay/mock"
 	"github.com/LFDT-Panurus/panurus/token/services/network/fabric/endorsement/fsc"
 	"github.com/LFDT-Panurus/panurus/token/services/network/fabric/endorsement/fsc/mock"
 	"github.com/LFDT-Panurus/panurus/token/services/ttx/dep/tokenapi"
@@ -36,6 +39,7 @@ type MockNewSetupPublicParamsResponderView struct {
 	ppValidator     *mock.PublicParamsValidator
 	pp              *mock2.PublicParameters
 	tms             *token.ManagementService
+	replayGuard     *replaymock.Guard
 }
 
 func mockNewSetupPublicParamsResponderView(t *testing.T, overrideTMSID *token.TMSID) *MockNewSetupPublicParamsResponderView {
@@ -47,8 +51,9 @@ func mockNewSetupPublicParamsResponderView(t *testing.T, overrideTMSID *token.TM
 	fabricTx := &mock.FabricTransaction{}
 	fabricTx.IDReturns("a_tx_id")
 	fabricTx.CreatorReturns([]byte("creator_identity"))
+	fabricTx.NonceReturns([]byte("a_nonce"))
 	fabricTx.SignedProposalReturns(&mockSignedProposal{
-		proposalBytes: []byte("proposal_bytes"),
+		proposalBytes: newValidProposalBytes(t, "a_tx_id", []byte("creator_identity"), []byte("a_nonce"), time.Now()),
 		signature:     []byte("proposal_signature"),
 	})
 	fabricTx.ProposalReturns(&mockProposal{
@@ -102,6 +107,7 @@ func mockNewSetupPublicParamsResponderView(t *testing.T, overrideTMSID *token.TM
 	pp := &mock2.PublicParameters{}
 	ppValidator.PublicParametersFromBytesReturns(pp, nil)
 
+	replayGuard := &replaymock.Guard{}
 	view := fsc.NewResponderView(
 		nil,
 		func(txID string, namespace string, rws *fabric.RWSet) (fsc.Translator, error) {
@@ -112,6 +118,7 @@ func mockNewSetupPublicParamsResponderView(t *testing.T, overrideTMSID *token.TM
 		&mock.StorageProvider{},
 		channelProvider,
 		ppValidator,
+		replayGuard,
 	)
 
 	return &MockNewSetupPublicParamsResponderView{
@@ -128,6 +135,7 @@ func mockNewSetupPublicParamsResponderView(t *testing.T, overrideTMSID *token.TM
 		ppValidator:     ppValidator,
 		pp:              pp,
 		tms:             tms,
+		replayGuard:     replayGuard,
 	}
 }
 
@@ -417,6 +425,38 @@ func TestSetupPublicParamsResponderView(t *testing.T) {
 			},
 		},
 		{
+			name: "already processed",
+			setup: func() *MockNewSetupPublicParamsResponderView {
+				m := mockNewSetupPublicParamsResponderView(t, nil)
+				m.replayGuard.CheckReturns(replay.ErrAlreadyProcessed)
+
+				return m
+			},
+			expectError:      true,
+			expectErrorType:  fsc.ErrAlreadyProcessed,
+			expectErrContain: replay.ErrAlreadyProcessed.Error(),
+			verify: func(m *MockNewSetupPublicParamsResponderView, res any) {
+				assert.Equal(t, 1, m.rws.DoneCallCount())
+				assert.Equal(t, 1, m.replayGuard.CheckCallCount())
+			},
+		},
+		{
+			name: "out of window",
+			setup: func() *MockNewSetupPublicParamsResponderView {
+				m := mockNewSetupPublicParamsResponderView(t, nil)
+				m.replayGuard.CheckReturns(replay.ErrOutOfWindow)
+
+				return m
+			},
+			expectError:      true,
+			expectErrorType:  fsc.ErrOutOfWindow,
+			expectErrContain: replay.ErrOutOfWindow.Error(),
+			verify: func(m *MockNewSetupPublicParamsResponderView, res any) {
+				assert.Equal(t, 1, m.rws.DoneCallCount())
+				assert.Equal(t, 1, m.replayGuard.CheckCallCount())
+			},
+		},
+		{
 			name: "success",
 			setup: func() *MockNewSetupPublicParamsResponderView {
 				m := mockNewSetupPublicParamsResponderView(t, nil)
@@ -427,6 +467,11 @@ func TestSetupPublicParamsResponderView(t *testing.T) {
 			verify: func(m *MockNewSetupPublicParamsResponderView, res any) {
 				assert.Equal(t, 1, m.rws.DoneCallCount())
 				assert.Equal(t, 1, m.translator.WriteCallCount())
+				require.Equal(t, 1, m.replayGuard.CheckCallCount())
+				_, key := m.replayGuard.CheckArgsForCall(0)
+				assert.Equal(t, "a_tx_id", key.TxID)
+				assert.Equal(t, []byte("creator_identity"), key.Creator)
+				assert.Equal(t, []byte("a_nonce"), key.Nonce)
 				_, action := m.translator.WriteArgsForCall(0)
 				setupAction, ok := action.(interface {
 					GetSetupParameters() ([]byte, error)

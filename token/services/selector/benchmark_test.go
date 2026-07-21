@@ -27,7 +27,7 @@ import (
 type WalletIDByRawIdentityFunc func(rawIdentity []byte) string
 
 type Locker interface {
-	Lock(ctx context.Context, id *token2.ID, txID string, reclaim bool) (string, error)
+	Lock(ctx context.Context, id *token2.ID, txID string, walletID string, reclaim bool) (string, error)
 	UnlockIDs(ctx context.Context, ids ...*token2.ID) []*token2.ID
 	UnlockByTxID(ctx context.Context, txID string)
 	IsLocked(id *token2.ID) bool
@@ -177,7 +177,7 @@ func NewSelector(qs *testutils.MockQueryService, walletIDByRawIdentity WalletIDB
 
 func NewSherdSelector(qs *testutils.MockQueryService, _ WalletIDByRawIdentityFunc, lock selector.Locker) (ExtendedSelector, CleanupFunction) {
 	return &extendedSelector{
-		Selector: sherdlock.NewSherdSelector(testutils.TxID, sherdlock.NewLazyFetcher(qs), inmemory2.NewLocker(lock), nil, testutils.TokenQuantityPrecision, sherdlock.NoBackoff, testutils.SelectorNumRetries, sherdlock.NewMetrics(&disabled.Provider{})),
+		Selector: sherdlock.NewSherdSelector(testutils.TxID, sherdlock.NewLazyFetcher(qs), inmemory2.NewLocker(lock), testutils.TokenQuantityPrecision, sherdlock.NoBackoff, testutils.SelectorNumRetries, sherdlock.NewMetrics(&disabled.Provider{})),
 		Lock:     nil,
 	}, nil
 }

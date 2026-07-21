@@ -169,11 +169,7 @@ func (q *MockQueryService) GetStatus(ctx context.Context, txID string) (token.Tx
 type NoLock struct {
 }
 
-func (n *NoLock) Lock(ctx context.Context, id *token2.ID, txID string, reclaim bool) (string, error) {
-	return "", nil
-}
-
-func (n *NoLock) LockWithIdentity(ctx context.Context, id *token2.ID, txID string, identity string, reclaim bool) (string, error) {
+func (n *NoLock) Lock(ctx context.Context, id *token2.ID, txID string, walletID string, reclaim bool) (string, error) {
 	return "", nil
 }
 

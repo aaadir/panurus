@@ -92,7 +92,7 @@ func TestScannerDoesNotDeleteReclaimed(t *testing.T) {
 
 	// Step 1: Lock the token for tx-A.
 	mock.setStatus(txA, ttxdb.Pending)
-	_, err := d.Lock(context.Background(), tokenID, txA, false)
+	_, err := d.Lock(context.Background(), tokenID, txA, "w1", false)
 	require.NoError(t, err)
 
 	// Step 2: Mark tx-A as Deleted so the scanner will collect it.
@@ -130,7 +130,7 @@ func TestScannerDoesNotDeleteReclaimed(t *testing.T) {
 
 	// Simulate Lock(reclaim=true) for tx-B: tx-A is Deleted so reclaim succeeds.
 	mock.setStatus(txB, ttxdb.Pending)
-	_, err = d.Lock(context.Background(), tokenID, txB, true)
+	_, err = d.Lock(context.Background(), tokenID, txB, "w1", true)
 	require.NoError(t, err)
 
 	// Verify the token is now locked by tx-B.
@@ -174,7 +174,7 @@ func TestScannerDeletesStaleEntry(t *testing.T) {
 
 	// Lock the token for tx-A, then mark it Deleted.
 	mock.setStatus(txA, ttxdb.Pending)
-	_, err := d.Lock(context.Background(), tokenID, txA, false)
+	_, err := d.Lock(context.Background(), tokenID, txA, "w1", false)
 	require.NoError(t, err)
 	mock.setStatus(txA, ttxdb.Deleted)
 

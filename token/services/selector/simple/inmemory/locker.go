@@ -57,37 +57,9 @@ type locker struct {
 	cancel                 context.CancelFunc
 	scanDone               chan struct{}
 	stopOnce               sync.Once
-	enforcer               *Locker
-}
-
-// LockerConfig holds configuration for the locker
-type LockerConfig struct {
-	MaxLocksPerIdentity int           // Maximum locks any identity can hold (0 = unlimited)
-	RateLimit           float64       // Lock requests per second per identity (0 = unlimited)
-	RateLimitBurst      float64       // Burst capacity for rate limiter
-	RateLimitIdleTTL    time.Duration // How long a rate-limit bucket may be idle before eviction (0 = no eviction)
-	// RateLimiter, when non-nil, is an application-supplied rate limiter used instead
-	// of the built-in token-bucket limiter. Its lifecycle is owned by the application:
-	// the locker/enforcer will not Stop it. When nil, a built-in limiter is created
-	// from RateLimit/RateLimitBurst (if RateLimit > 0).
-	RateLimiter RateLimiter
-}
-
-// DefaultLockerConfig returns sensible defaults
-func DefaultLockerConfig() LockerConfig {
-	return LockerConfig{
-		MaxLocksPerIdentity: 1000,
-		RateLimit:           10.0,
-		RateLimitBurst:      20.0,
-		RateLimitIdleTTL:    10 * time.Minute,
-	}
 }
 
 func NewLocker(ttxdb TXStatusProvider, timeout time.Duration, validTxEvictionTimeout time.Duration) simple.Locker {
-	return NewLockerWithConfig(ttxdb, timeout, validTxEvictionTimeout, DefaultLockerConfig())
-}
-
-func NewLockerWithConfig(ttxdb TXStatusProvider, timeout time.Duration, validTxEvictionTimeout time.Duration, config LockerConfig) simple.Locker {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := &locker{
@@ -98,7 +70,6 @@ func NewLockerWithConfig(ttxdb TXStatusProvider, timeout time.Duration, validTxE
 		validTxEvictionTimeout: validTxEvictionTimeout,
 		cancel:                 cancel,
 		scanDone:               make(chan struct{}),
-		enforcer:               NewEnforcer(config),
 	}
 	r.start(ctx)
 
@@ -117,27 +88,16 @@ func (d *locker) Stop() error {
 			err = ErrTimeout
 			logger.Warnf("scan goroutine did not stop within timeout")
 		}
-		if d.enforcer != nil {
-			d.enforcer.Stop()
-		}
 	})
 
 	return err
 }
 
-func (d *locker) Lock(ctx context.Context, id *token2.ID, txID string, reclaim bool) (string, error) {
-	return d.LockWithIdentity(ctx, id, txID, "", reclaim)
-}
-
-func (d *locker) LockWithIdentity(ctx context.Context, id *token2.ID, txID string, identity string, reclaim bool) (string, error) {
+// Lock locks the token id for txID on behalf of walletID. This built-in in-memory
+// locker records walletID (for diagnostics) but applies no rate limiting or quota:
+// applications that need those integrate their own Locker implementation.
+func (d *locker) Lock(ctx context.Context, id *token2.ID, txID string, walletID string, reclaim bool) (string, error) {
 	k := *id
-
-	// Rate limiting can be checked before acquiring the write lock.
-	if err := d.enforcer.CheckRateLimit(identity); err != nil {
-		logger.DebugfContext(ctx, "rate limit exceeded for identity [%s]: %v", identity, err)
-
-		return "", err
-	}
 
 	// check quickly if the token is locked
 	d.lock.RLock()
@@ -159,7 +119,7 @@ func (d *locker) LockWithIdentity(ctx context.Context, id *token2.ID, txID strin
 		if reclaim {
 			// Second chance
 			logger.DebugfContext(ctx, "[%s] already locked by [%s], try to reclaim...", id, e)
-			reclaimed, status := d.reclaim(ctx, id, e.TxID, e.Identity)
+			reclaimed, status := d.reclaim(ctx, id, e.TxID)
 			if !reclaimed {
 				logger.DebugfContext(ctx, "[%s] already locked by [%s], reclaim failed, tx status [%s]", id, e, ttxdb.TxStatusMessage[status])
 				if logger.IsEnabledFor(zapcore.DebugLevel) {
@@ -179,17 +139,9 @@ func (d *locker) LockWithIdentity(ctx context.Context, id *token2.ID, txID strin
 		}
 	}
 
-	// Quota check must be inside the write lock so the check and TrackLock are atomic.
-	if err := d.enforcer.CheckQuota(identity); err != nil {
-		logger.DebugfContext(ctx, "quota exceeded for identity [%s]: %v", identity, err)
-
-		return "", err
-	}
-
-	logger.DebugfContext(ctx, "locking [%s] for [%s] by identity [%s]", id, txID, identity)
+	logger.DebugfContext(ctx, "locking [%s] for [%s] by wallet [%s]", id, txID, walletID)
 	now := time.Now()
-	d.locked[k] = &lockEntry{TxID: txID, Identity: identity, Created: now, LastAccess: now}
-	d.enforcer.TrackLock(identity)
+	d.locked[k] = &lockEntry{TxID: txID, Identity: walletID, Created: now, LastAccess: now}
 
 	return "", nil
 }
@@ -213,7 +165,6 @@ func (d *locker) UnlockIDs(ctx context.Context, ids ...*token2.ID) []*token2.ID 
 		}
 		logger.DebugfContext(ctx, "unlocking [%s] hold by [%s]", id, entry)
 		delete(d.locked, k)
-		d.enforcer.TrackUnlock(entry.Identity)
 	}
 
 	return notFound
@@ -228,7 +179,6 @@ func (d *locker) UnlockByTxID(ctx context.Context, txID string) {
 		if entry.TxID == txID {
 			logger.DebugfContext(ctx, "unlocking [%s] hold by [%s]", id, entry)
 			delete(d.locked, id)
-			d.enforcer.TrackUnlock(entry.Identity)
 		}
 	}
 }
@@ -242,7 +192,7 @@ func (d *locker) IsLocked(id *token2.ID) bool {
 	return ok
 }
 
-func (d *locker) reclaim(ctx context.Context, id *token2.ID, txID string, identity string) (bool, int) {
+func (d *locker) reclaim(ctx context.Context, id *token2.ID, txID string) (bool, int) {
 	status, _, err := d.ttxdb.GetStatus(ctx, txID)
 	if err != nil {
 		return false, status
@@ -250,7 +200,6 @@ func (d *locker) reclaim(ctx context.Context, id *token2.ID, txID string, identi
 	switch status {
 	case ttxdb.Deleted:
 		delete(d.locked, *id)
-		d.enforcer.TrackUnlock(identity)
 
 		return true, status
 	default:
@@ -315,7 +264,6 @@ func (d *locker) scan(ctx context.Context) {
 			// reclaimed this token and re-locked it for a new transaction.
 			if entry, ok := d.locked[s.id]; ok && entry.TxID == s.txID {
 				delete(d.locked, s.id)
-				d.enforcer.TrackUnlock(entry.Identity)
 			}
 		}
 		d.lock.Unlock()

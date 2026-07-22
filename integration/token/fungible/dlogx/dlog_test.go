@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package dlogx
 
 import (
+	"time"
+
 	integration2 "github.com/LFDT-Panurus/panurus/integration"
 	"github.com/LFDT-Panurus/panurus/integration/nwo/token"
 	"github.com/LFDT-Panurus/panurus/integration/nwo/token/generators/crypto/zkatdlognoghv1"
@@ -217,4 +219,9 @@ func (s *fabricxTestSuite) Setup() {
 	network.RegisterPlatformFactory(token.NewPlatformFactory(s.II))
 	network.Generate()
 	network.Start()
+	// Sleep for a while to allow the networks to be ready, mirroring
+	// integration.TestSuite.Setup. Without this wait the first view (e.g. issue)
+	// can run before the issuer node's client is up and public params are
+	// installed, failing with "cannot retrieve public params".
+	time.Sleep(3 * time.Second)
 }

@@ -51,7 +51,13 @@ func TestSufficientTokensBigDenominationsOneReplica(t *testing.T) {
 }
 
 func TestSufficientTokensBigDenominationsManyReplicas(t *testing.T) {
-	replicas, terminate := startManagers(t, 3, 2*time.Second, 10)
+	// 300 goroutines (3 replicas x 100 requests) contend for only 2 tokens, so
+	// the herd drains slowly and unlucky goroutines must retry many times before
+	// they win a lock. The retry budget has to comfortably exceed the drain time,
+	// otherwise a goroutine exhausts its retries and aborts with "insufficient
+	// funds" even though funds are available - which is exactly how this test
+	// flaked on a slow CI runner. Give a generous backoff-retry budget.
+	replicas, terminate := startManagers(t, 3, 2*time.Second, 50)
 	defer terminate()
 	testutils.TestSufficientTokensBigDenominationsManyReplicas(t, replicas)
 }
@@ -122,9 +128,15 @@ func createManager(t *testing.T, pgConnStr string, backoff time.Duration, maxRet
 		LeaseCleanupTickPeriod: 0,
 		MaxTokensPerSelection:  10000,
 		MaxLockAttempts:        50000,
-		MaxRetryCycles:         10,
-		SelectionTimeout:       30 * time.Second,
-		Metrics:                m,
+		// Keep the outer retry-cycle cap consistent with the per-test
+		// backoff-retry budget so it doesn't silently bind before it (the
+		// previous hardcoded 10 capped tests that requested more retries).
+		MaxRetryCycles: maxRetries,
+		// Generous wall-clock ceiling for tests: the backoff-retry budget is
+		// the real control. A tight timeout here makes the heavily-contended
+		// stress tests flaky on slow/loaded CI runners.
+		SelectionTimeout: 2 * time.Minute,
+		Metrics:          m,
 	})
 
 	return testutils.NewEnhancedManager(t, manager, tokenDB.(dbtest.TestTokenDB)), nil

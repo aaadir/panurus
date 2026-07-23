@@ -15,6 +15,7 @@ import (
 	"github.com/LFDT-Panurus/panurus/token/services/logging"
 	"github.com/LFDT-Panurus/panurus/token/services/network"
 	"github.com/LFDT-Panurus/panurus/token/services/storage/db/driver"
+	"github.com/LFDT-Panurus/panurus/token/services/storage/db/sql/query/pagination"
 	"github.com/LFDT-Panurus/panurus/token/services/tokens"
 	"github.com/LFDT-Panurus/panurus/token/services/utils"
 	token2 "github.com/LFDT-Panurus/panurus/token/token"
@@ -26,6 +27,10 @@ import (
 var (
 	logger = logging.MustGetLogger()
 )
+
+// transactionsCheckPageSize is the page size used to iterate all transactions
+// during integrity checks; kept below the storage layer's max page size.
+const transactionsCheckPageSize = 100
 
 type TokenTransactionDB interface {
 	GetTokenRequest(ctx context.Context, txID string) ([]byte, error)
@@ -115,52 +120,77 @@ func (a *DefaultCheckers) CheckTransactions(ctx context.Context) ([]string, erro
 		return nil, errors.WithMessagef(err, "failed to get ledger [%s]", tms.ID())
 	}
 
-	it, err := a.db.Transactions(ctx, driver.QueryTransactionsParams{}, nil)
+	// Iterate over transactions one limited page at a time. A single unlimited
+	// query is rejected by the storage layer, so we page through the whole set
+	// using offset pagination and stop once a page comes back short.
+	var page driver2.Pagination
+	page, err = pagination.Offset(0, transactionsCheckPageSize)
 	if err != nil {
-		return nil, errors.WithMessagef(err, "failed querying transactions [%s]", tms.ID())
+		return nil, errors.WithMessagef(err, "failed to create pagination [%s]", tms.ID())
 	}
-	defer it.Items.Close()
 	for {
-		transactionRecord, err := it.Items.Next()
+		count, err := func() (int, error) {
+			it, err := a.db.Transactions(ctx, driver.QueryTransactionsParams{}, page)
+			if err != nil {
+				return 0, errors.WithMessagef(err, "failed querying transactions [%s]", tms.ID())
+			}
+			defer it.Items.Close()
+			count := 0
+			for {
+				transactionRecord, err := it.Items.Next()
+				if err != nil {
+					return 0, errors.WithMessagef(err, "failed querying transactions [%s]", tms.ID())
+				}
+				if transactionRecord == nil {
+					break
+				}
+				count++
+
+				tokenRequest, err := a.db.GetTokenRequest(ctx, transactionRecord.TxID)
+				if err != nil {
+					return 0, errors.WithMessagef(err, "failed getting token request [%s]", transactionRecord.TxID)
+				}
+				if tokenRequest == nil {
+					return 0, errors.Errorf("token request [%s] is nil", transactionRecord.TxID)
+				}
+
+				// check the ledger
+				lVC, _, err := l.Status(transactionRecord.TxID)
+				if err != nil {
+					lVC = network.Unknown
+				}
+				switch {
+				case transactionRecord.Status == driver.Confirmed && lVC != network.Valid:
+					if err != nil {
+						errorMessages = append(errorMessages, fmt.Sprintf("failed to get ledger transaction status for [%s]: [%s]", transactionRecord.TxID, err))
+					}
+					errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is valid for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
+				case transactionRecord.Status == driver.Deleted && lVC != network.Invalid:
+					if lVC != network.Unknown || transactionRecord.Status != driver.Deleted {
+						if err != nil {
+							errorMessages = append(errorMessages, fmt.Sprintf("failed to get ledger transaction status for [%s]: [%s]", transactionRecord.TxID, err))
+						}
+						errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is invalid for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
+					}
+				case transactionRecord.Status == driver.Unknown && lVC != network.Unknown:
+					errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is unknown for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
+				case transactionRecord.Status == driver.Pending && lVC == network.Busy:
+					// this is fine, let's continue
+				case transactionRecord.Status == driver.Pending && lVC != network.Unknown:
+					errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is busy for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
+				}
+			}
+
+			return count, nil
+		}()
 		if err != nil {
-			return nil, errors.WithMessagef(err, "failed querying transactions [%s]", tms.ID())
+			return nil, err
 		}
-		if transactionRecord == nil {
+		if count < transactionsCheckPageSize {
 			break
 		}
-
-		tokenRequest, err := a.db.GetTokenRequest(ctx, transactionRecord.TxID)
-		if err != nil {
-			return nil, errors.WithMessagef(err, "failed getting token request [%s]", transactionRecord.TxID)
-		}
-		if tokenRequest == nil {
-			return nil, errors.Errorf("token request [%s] is nil", transactionRecord.TxID)
-		}
-
-		// check the ledger
-		lVC, _, err := l.Status(transactionRecord.TxID)
-		if err != nil {
-			lVC = network.Unknown
-		}
-		switch {
-		case transactionRecord.Status == driver.Confirmed && lVC != network.Valid:
-			if err != nil {
-				errorMessages = append(errorMessages, fmt.Sprintf("failed to get ledger transaction status for [%s]: [%s]", transactionRecord.TxID, err))
-			}
-			errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is valid for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
-		case transactionRecord.Status == driver.Deleted && lVC != network.Invalid:
-			if lVC != network.Unknown || transactionRecord.Status != driver.Deleted {
-				if err != nil {
-					errorMessages = append(errorMessages, fmt.Sprintf("failed to get ledger transaction status for [%s]: [%s]", transactionRecord.TxID, err))
-				}
-				errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is invalid for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
-			}
-		case transactionRecord.Status == driver.Unknown && lVC != network.Unknown:
-			errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is unknown for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
-		case transactionRecord.Status == driver.Pending && lVC == network.Busy:
-			// this is fine, let's continue
-		case transactionRecord.Status == driver.Pending && lVC != network.Unknown:
-			errorMessages = append(errorMessages, fmt.Sprintf("transaction record [%s] is busy for vault but not for the ledger [%d]", transactionRecord.TxID, lVC))
+		if page, err = page.Next(); err != nil {
+			return nil, errors.WithMessagef(err, "failed advancing pagination [%s]", tms.ID())
 		}
 	}
 
